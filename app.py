@@ -1,9 +1,10 @@
 from flask import Flask, request, jsonify
-import tensorflow as tf
-import cv2
+import tflite_runtime.interpreter as tflite
 import numpy as np
+import requests
+from PIL import Image
+import io
 import os
-from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -13,7 +14,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Load the TFLite model
-interpreter = tf.lite.Interpreter(model_path="model.tflite")
+interpreter = tflite.Interpreter(model_path="model.tflite")
 interpreter.allocate_tensors()
 
 # Get input and output tensors
@@ -32,28 +33,34 @@ CLASS_NAMES = {
     7: "Ductal Carcinoma"
 }
 
-def preprocess_image(image_path):
-    # Read and preprocess the image
-    image = cv2.imread(image_path)
-    image = cv2.resize(image, (224, 224))
+def download_and_preprocess_image(image_url):
+    # Download image from URL
+    response = requests.get(image_url)
+    if response.status_code != 200:
+        raise Exception("Failed to download image")
 
-    # Apply CLAHE
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    cl = clahe.apply(l)
-    ca = clahe.apply(a)
-    cb = clahe.apply(b)
-    lab = cv2.merge((cl, ca, cb))
-    image = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    # Open image using PIL
+    image = Image.open(io.BytesIO(response.content))
 
-    # Normalize
-    image = image.astype('float32') / 255.0
-    return np.expand_dims(image, axis=0)
+    # Convert to RGB if needed
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
 
-def predict_image(image_path):
+    # Resize image
+    image = image.resize((224, 224))
+
+    # Convert to numpy array and normalize
+    image_array = np.array(image)
+    image_array = image_array.astype('float32') / 255.0
+
+    return np.expand_dims(image_array, axis=0)
+
+def predict_image(image_url):
     # Preprocess the image
-    processed_image = preprocess_image(image_path)
+    try:
+        processed_image = download_and_preprocess_image(image_url)
+    except Exception as e:
+        raise Exception(f"Error processing image: {str(e)}")
 
     # Set the input tensor
     interpreter.set_tensor(input_details[0]['index'], processed_image)
@@ -74,28 +81,21 @@ def predict_image(image_path):
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'}), 400
+    # Check if image_url is in the request
+    if not request.is_json:
+        return jsonify({'error': 'Request must be JSON'}), 400
 
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
+    data = request.get_json()
+    if 'image_url' not in data:
+        return jsonify({'error': 'No image URL provided'}), 400
 
-    if file:
-        filename = secure_filename(file.filename)
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
+    image_url = data['image_url']
 
-        try:
-            result = predict_image(filepath)
-            # Clean up the uploaded file
-            os.remove(filepath)
-            return jsonify(result)
-        except Exception as e:
-            # Clean up the uploaded file in case of error
-            if os.path.exists(filepath):
-                os.remove(filepath)
-            return jsonify({'error': str(e)}), 500
+    try:
+        result = predict_image(image_url)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/', methods=['GET'])
 def home():
@@ -105,8 +105,12 @@ def home():
             'predict': {
                 'url': '/predict',
                 'method': 'POST',
+                'content_type': 'application/json',
                 'parameters': {
-                    'file': 'image file (jpg, jpeg, png)'
+                    'image_url': 'URL of the image to classify'
+                },
+                'example_request': {
+                    'image_url': 'https://example.com/image.jpg'
                 },
                 'response': {
                     'class': 'predicted class name',
