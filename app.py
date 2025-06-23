@@ -6,6 +6,8 @@ from PIL import Image
 import io
 import os
 import logging
+import platform
+import sys
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -47,6 +49,30 @@ CLASS_NAMES = {
     6: "Tubular Adenoma",
     7: "Ductal Carcinoma"
 }
+
+def get_system_info():
+    return {
+        'python_version': sys.version,
+        'platform': platform.platform(),
+        'processor': platform.processor(),
+        'machine': platform.machine(),
+        'python_path': sys.executable
+    }
+
+def get_model_info():
+    input_shape = input_details[0]['shape']
+    input_type = input_details[0]['dtype'].__name__
+    output_shape = output_details[0]['shape']
+    output_type = output_details[0]['dtype'].__name__
+
+    return {
+        'input_shape': input_shape.tolist(),
+        'input_type': input_type,
+        'output_shape': output_shape.tolist(),
+        'output_type': output_type,
+        'number_of_classes': len(CLASS_NAMES),
+        'classes': CLASS_NAMES
+    }
 
 def download_and_preprocess_image(image_url):
     logger.info(f"Downloading image from URL: {image_url}")
@@ -124,28 +150,63 @@ def predict():
 
 @app.route('/', methods=['GET'])
 def home():
-    return jsonify({
-        'message': 'Welcome to Breast Cancer Classification API',
-        'status': 'healthy',
-        'endpoints': {
-            'predict': {
-                'url': '/predict',
-                'method': 'POST',
-                'content_type': 'application/json',
-                'parameters': {
-                    'image_url': 'URL of the image to classify'
+    try:
+        system_info = get_system_info()
+        model_info = get_model_info()
+
+        return jsonify({
+            'status': 'healthy',
+            'application_info': {
+                'name': 'Breast Cancer Classification API',
+                'version': '1.0.0',
+                'description': 'API for classifying breast cancer histopathological images',
+                'author': 'Youssef Ramadan',
+                'contact': 'your.email@example.com'
+            },
+            'system_info': system_info,
+            'model_info': model_info,
+            'endpoints': {
+                'root': {
+                    'url': '/',
+                    'method': 'GET',
+                    'description': 'Get API information and status'
                 },
-                'example_request': {
-                    'image_url': 'https://example.com/image.jpg'
-                },
-                'response': {
-                    'class': 'predicted class name',
-                    'confidence': 'confidence score (0-1)',
-                    'probabilities': 'dictionary of class probabilities'
+                'predict': {
+                    'url': '/predict',
+                    'method': 'POST',
+                    'content_type': 'application/json',
+                    'parameters': {
+                        'image_url': 'URL of the image to classify'
+                    },
+                    'example_request': {
+                        'image_url': 'https://example.com/image.jpg'
+                    },
+                    'example_response': {
+                        'class': 'Predicted class name',
+                        'confidence': 'Confidence score (0-1)',
+                        'probabilities': {
+                            'class_name': 'probability score'
+                        }
+                    }
                 }
+            },
+            'supported_image_formats': ['jpg', 'jpeg', 'png'],
+            'image_requirements': {
+                'recommended_size': '224x224 pixels',
+                'color_space': 'RGB',
+                'preprocessing': [
+                    'Resize to 224x224',
+                    'Convert to RGB if needed',
+                    'Normalize pixel values to [0,1]'
+                ]
             }
-        }
-    })
+        })
+    except Exception as e:
+        logger.error(f"Error in home route: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
